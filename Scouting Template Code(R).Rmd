@@ -1,0 +1,685 @@
+---
+title: 'Scouting Report Template'
+author: "Birch Herring-Jackson,Dante Maurice,Lance Brady"
+date: "06/18/2024"
+---
+
+```{r setup-global, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, error = FALSE, echo = FALSE)
+```
+
+### Load in Libraries
+```{r load-libraries, include=FALSE}
+library(tidyverse)
+library(reshape2)
+library(tidyr)
+library(dplyr)
+library(lubridate)
+library(kableExtra)
+library(readxl)
+library(ggplot2)
+library(gt)
+library(writexl)
+library(zip)
+library(readr)
+library(rvest)
+library(xml2)
+```
+
+
+## Load All Data from Relievers
+```{r}
+
+unzip("New England.zip", exdir = "unzipped_files")
+file_list <- list.files(path = "unzipped_files", pattern = "*.csv", full.names = TRUE)
+
+# Read and combine all CSV files
+data_list <- lapply(file_list, read.csv)  # read.csv() reads the header by default
+data_list <- lapply(data_list, function(df) {
+  df$CatcherId <- as.character(df$CatcherId)
+  return(df)})
+combined_data <- bind_rows(data_list)
+
+# Write the combined data to a new Excel file
+write_xlsx(combined_data, "Knockouts.xlsx")
+#This creates an entire team's data sheet, hitters and all, which will make other projects easier down the road.
+```
+
+```{r}
+TEAM=read_excel("Knockouts.xlsx")
+pitcher=TEAM %>% filter(Pitcher %in% c("Sam Ryan"))
+pitcher=pitcher %>% drop_na(TaggedPitchType) %>% drop_na(RelSpeed)%>% drop_na(SpinRate) %>% drop_na(HorzApprAngle) %>% drop_na(VertApprAngle)
+pitcher$ID <- seq.int(nrow(pitcher))
+```
+
+Colors!
+```{r, include=FALSE}
+## Define Universal Pitch Colors
+pitch_colors <- c(
+  "Fastball" = "blue",
+  "Slider" = "orange",
+  "Changeup" = "darkgreen",
+  "2-Seam Fastball" = "red",
+  "Curveball" = "purple",
+  "Cutter" = "brown",
+  "Splitter" = "pink",
+  "Knuckleball" = "grey",
+  "Slurve" = "purple"
+)
+```
+
+Scrapes Baseball Reference to give us Season Performance
+```{r}
+
+url <- "https://www.baseball-reference.com/register/player.fcgi?id=ryan--002sam"  
+
+
+webpage <- read_html(url)
+
+
+stats_table <- webpage %>%
+  html_node("table#standard_pitching") %>%  
+  html_table()
+
+
+stats_df <- as.data.frame(stats_table)
+
+
+
+season_stats=stats_df %>% filter(Year==2024)
+season_stats=season_stats %>% select(Year, Tm, G, IP, ERA, R, ER, H, SO, BB, SO9, BB9, WHIP, HR)
+
+season_stats$WHIP <- as.numeric(as.character(season_stats$WHIP))
+
+# Creating a gt table from the dataframe
+br_table <- season_stats %>%
+  gt() %>%
+  tab_header(title = "2024 Season Stats") %>%
+  cols_label(
+    Year= "Year",
+    Tm="Team",
+    G = "G",
+    IP = "IP",
+    ERA = "ERA",
+    R = "R",
+    ER = "ER",
+    H = "H",
+    SO = "K",
+    BB = "BB",
+    SO9= "K/9",
+    BB9= "BB/9",
+    WHIP = "WHIP",
+    HR = "HRA"
+  ) %>%
+  fmt_number(
+    columns = vars(IP, ERA, BB9, SO9, WHIP),
+    decimals = 2
+  ) %>%
+  fmt_integer(
+    columns = vars(Year, G, R, ER, H, SO, BB, HR)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgrey"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table.border.top.width = px(3),
+    table.border.bottom.width = px(3)
+  ) %>%
+  tab_style(
+    style = list(
+      cell_borders(sides = "top", color = "black", weight = px(1)),
+      cell_borders(sides = "bottom", color = "black", weight = px(1))
+    ),
+    locations = cells_body(columns = vars(Year, Tm, G, IP, ERA, R, ER, H, SO, BB, SO9, BB9, WHIP, HR))
+  ) %>%
+  cols_align(align = "center", columns = everything())
+```
+
+```{r}
+br_table
+
+```
+
+Can be used before/after pitch cleaning to see progress
+```{r}
+pitcher %>%
+  group_by(TaggedPitchType) %>%
+  summarize(count = n()) %>% mutate(percentage = (count / sum(count)) * 100,)
+```
+
+Pitch Checking
+```{r, include = FALSE}
+## Tilt/Spin Check for Data Cleaning
+pitch_checking=pitcher %>%
+  group_by(TaggedPitchType) %>%
+  select("ID", "Date", "RelSpeed","Tilt","yt_Efficiency", "TaggedPitchType", "RelSpeed", "SpinRate", "HorzBreak", "InducedVertBreak")
+# I included date because it is good to see if a pitcher has improved 
+# velocity or other metrics in his last start or two
+```
+
+Correct pitches as necesary (example code below)
+```{r}
+pitcher$TaggedPitchType[pitcher$TaggedPitchType == "Curveball"] = "Slurve" 
+pitcher$TaggedPitchType[pitcher$TaggedPitchType == "Slider"] = "Slurve"
+pitcher$TaggedPitchType[pitcher$TaggedPitchType == "Splitter"] = "Changeup"
+pitcher$TaggedPitchType[pitcher$TaggedPitchType == "Sinker"] = "Fastball"
+pitcher$TaggedPitchType[pitcher$TaggedPitchType == "Slider"] = "Cutter"
+# for(i in 1:nrow(pitcher)){
+#   row=pitcher[i,]
+#   if(row$TaggedPitchType=="Curveball"&row$InducedVertBreak>=-5){
+#     row$TaggedPitchType="Slider"
+#   }
+# }
+wrong_pitches=c(95,97,99,104,112,165,270)
+for(i in wrong_pitches){
+   pitcher$TaggedPitchType[pitcher$ID == i] = "Cutter"
+}
+
+wrong_pitches <- c(1, 197)
+
+# Remove rows where the ID is in wrong_pitches
+pitcher <- pitcher[!(pitcher$ID %in% wrong_pitches),]
+
+wrong_pitches=c(185,194,230)
+for(i in wrong_pitches){
+   pitcher$TaggedPitchType[pitcher$ID == i] = "Slider"
+}
+
+wrong_pitches=c(708,709,716,718,719,722,723,725,727,729,730,732,735,736,741,742,747,755,757,768,771,772,773,774,776,778,779,782,784,785,787,790,795,797,807,812,816,832,835,836,837,840,844,851,858,862,868,870,875,889,897,905,914,923,931,940,943,948,949,953,956,958,959,960,977,990,992,995,1007,1009,1016,1020,1022,1030,1052,1065,1078,1084,1089,1094,1117,1119,1121,1123,1127,1135,1143,135,141,145,152,154,156,164,165,169,172,173,176,178,179,185,186,188,189,198,200,201,210,211,214,229,235,236,254,255,261,265,283,285,288,290,291,294,295,297,303,305,307,310,311,315,317,321,324,327,328,330,334,336,337,341,347,348,349,351,352,353,356,360,361,363,365,368,370,376,377,378,384,386,390,393,397,399,401,402,410,411,420,426,710,711,745,814,919,280,301,302,308,314,316,340,343,344,345,346,359,373,375)
+for(i in wrong_pitches){
+   pitcher$TaggedPitchType[pitcher$ID == i] = "2-Seam Fastball"
+}
+
+wrong_pitches=c(909,932,946,640,693,21,503,296)
+for(i in wrong_pitches){
+   pitcher$TaggedPitchType[pitcher$ID == i] = "Slider"
+}
+
+wrong_pitches=c(888,1033,653,895,655,670)
+for(i in wrong_pitches){
+   pitcher$TaggedPitchType[pitcher$ID == i] = "Fastball"
+}
+
+pitcher$TaggedPitchType[pitcher$ID == 406] = "Slider"
+pitcher$TaggedPitchType[pitcher$ID == 77] = "Fastball"
+pitcher$TaggedPitchType[pitcher$ID == 309] = "Changeup"
+pitcher$TaggedPitchType[pitcher$ID == 85] = "Changeup"
+# Uses a for loop to turn specific pitch ID's into different pitches as necessary (pitch ID ovr PitchNo because two different pitches can share a PitchNo)
+```
+
+Pitch Charecteristics Chart
+```{r, include = FALSE}
+# to get the most common tilt
+mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+
+total_pitches = nrow(pitcher)
+scouting_table = pitcher %>%
+ filter(!is.na(TaggedPitchType)) %>%
+  group_by(TaggedPitchType) %>%
+  summarise(NumberPitches = n(),
+            UsageRate = paste(round(NumberPitches/total_pitches, 4) * 100, "%"),
+            VelocityRange = paste(round(mean(RelSpeed, na.rm = TRUE) - 1), "-" , round(mean(RelSpeed, na.rm = TRUE) + 1)),
+            AvgSpinRate = mean(SpinRate, na.rm = TRUE),
+            AvgEfficiency=mean(yt_Efficiency),
+            AvgTilt=mode(Tilt),
+            VAA = mean(VertApprAngle),
+            HAA = mean(HorzApprAngle),
+            AvgInducedVerticalBreak = mean(InducedVertBreak, na.rm = TRUE),
+            AvgHorizontalBreak = mean(HorzBreak, na.rm = TRUE)
+            ) %>%
+  arrange(desc(NumberPitches))
+
+
+scouting_table_gt <- scouting_table %>%
+  gt() %>%
+  tab_header(title = "Pitch Characteristics") %>%
+  fmt_number(columns = vars(VelocityRange, AvgSpinRate, AvgEfficiency, AvgTilt, AvgInducedVerticalBreak, AvgHorizontalBreak, HAA, VAA), decimals = 2) %>%
+  cols_label(
+    TaggedPitchType = "Pitch",
+    NumberPitches = "No.",
+    UsageRate = "Usage%",
+    VelocityRange = "Velocity",
+    AvgSpinRate = "Spin",
+    AvgInducedVerticalBreak = "IVB",
+    AvgHorizontalBreak = "HorzB",
+    HAA="HAA",
+    VAA="VAA",
+    AvgTilt="Tilt",
+    AvgEfficiency="Efficiency"
+    
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgrey"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "grey", weight = px(1)),
+    locations = cells_body(everything())
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = vars(NumberPitches, UsageRate, AvgSpinRate, AvgEfficiency, AvgTilt, AvgInducedVerticalBreak, AvgHorizontalBreak, HAA, VAA)
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table_body.border.top.color = "black",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  ) 
+unique_pitches <- unique(scouting_table$TaggedPitchType)
+for (pitch in unique_pitches) {
+  if (pitch %in% names(pitch_colors)) {
+    scouting_table_gt <- scouting_table_gt %>%
+      tab_style(
+        style = list(
+          cell_fill(color = pitch_colors[pitch]),
+          cell_text(color = "white")  # Set text color to white
+        ),
+        locations = cells_body(columns = vars(TaggedPitchType), rows = TaggedPitchType == pitch)
+      )
+  }
+}
+```
+
+```{r}
+scouting_table_gt
+```
+
+Results Chart
+```{r}
+
+results_table = pitcher %>%
+ filter(!is.na(TaggedPitchType)) %>%
+  group_by(TaggedPitchType) %>%
+  summarise(NumberPitches = n(),
+            WhiffRate = paste(round(sum(PitchCall == "StrikeSwinging" & !is.na(PitchCall)) / sum((!is.na(PitchCall) & PitchCall == "Foul") | (!is.na(PitchCall) & PitchCall == "InPlay") | (PitchCall == "StrikeSwinging" & !is.na(PitchCall))), 3) * 100, "%"), 
+            CalledStrikeRate = paste(round(sum(PitchCall == "StrikeCalled" & !is.na(PitchCall)) / sum((!is.na(PitchCall) & PitchCall == "StrikeCalled") | (PitchCall == "BallCalled" & !is.na(PitchCall)) | (PitchCall == "StrikeSwinging" & !is.na(PitchCall))  | (PitchCall == "HitByPitch" & !is.na(PitchCall))), 3) * 100, "%"),
+            Balls=mean(PitchCall == "BallCalled") * 100,
+            HardHit=mean(ExitSpeed>=95, na.rm = TRUE) *100,
+            GB=mean(Angle<=10, na.rm = TRUE)*100,
+            FB=mean(Angle>25 & Angle<50, na.rm = TRUE)*100
+            ) %>%
+  arrange(desc(NumberPitches))
+
+## Make a better table using gt
+# Create the gt table and explicitly apply colors
+results_table_gt <- results_table %>%
+  gt() %>%
+  tab_header(title = "Pitch Results") %>%
+  fmt_number(columns = vars(WhiffRate, CalledStrikeRate, Balls, HardHit, GB, FB), decimals = 2) %>%
+  cols_label(
+    TaggedPitchType = "Pitch",
+    NumberPitches = "No.",
+    WhiffRate = "Whiff%",
+    CalledStrikeRate = "Called Strike%",
+    Balls="Ball%",
+    HardHit="HardHit%",
+    GB="Ground Ball%",
+    FB="Fly Ball%"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgrey"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "grey", weight = px(1)),
+    locations = cells_body(everything())
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = vars(WhiffRate, CalledStrikeRate, Balls, HardHit, FB, GB)
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table_body.border.top.color = "black",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  ) 
+unique_pitches <- unique(results_table$TaggedPitchType)
+for (pitch in unique_pitches) {
+  if (pitch %in% names(pitch_colors)) {
+    results_table_gt <- results_table_gt %>%
+      tab_style(
+        style = list(
+          cell_fill(color = pitch_colors[pitch]),
+          cell_text(color = "white")  # Set text color to white
+        ),
+        locations = cells_body(columns = vars(TaggedPitchType), rows = TaggedPitchType == pitch)
+      )
+  }
+}
+```
+
+```{r}
+results_table_gt
+```
+
+Pitch Movement Plot
+```{r}
+plot_filtered <- pitcher %>%
+  filter(!is.na(HorzBreak) & !is.na(InducedVertBreak))
+max_range <- max(abs(plot_filtered$HorzBreak), abs(plot_filtered$InducedVertBreak))
+
+# Create the ggplot
+pitch_movement_plot <- ggplot(plot_filtered, aes(x = HorzBreak, y = InducedVertBreak, color = TaggedPitchType)) +
+  geom_point(size = 3, alpha = 0.4) +
+  geom_hline(yintercept = 0, linewidth = 0.5, color = "black") +
+  geom_vline(xintercept = 0, linewidth = 0.5, color = "black") +
+  labs(
+    title = "Pitch Movement",
+    x = "Horizontal Break (in.)",
+    y = "Induced Vertical Break (in.)",
+    color = "Pitch Type"
+  ) +
+  scale_color_manual(values = pitch_colors) +
+  coord_fixed(ratio = 1, xlim = c(-max_range, max_range), ylim = c(-max_range, max_range)) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    axis.title = element_text(size = 10),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 12)
+  )
+```
+
+```{r, height = 3, width = 3}
+pitch_movement_plot
+```
+
+Locations Charts
+```{r}
+pitcher <- pitcher %>%
+  mutate(BatterSide = ifelse(BatterSide == "Switch", "Right", BatterSide))
+
+horizontal_limits <- max(abs(c(-1.5, 1.5, min(pitcher$yt_PlateLocSide), max(pitcher$yt_PlateLocSide))))
+
+# Create the ggplot
+gLocations = ggplot(pitcher, aes(x = yt_PlateLocSide, y = yt_PlateLocHeight, color = TaggedPitchType)) +
+  geom_point(alpha = 0.8, size = 3) +  # Plot the points with some transparency
+  ## Draw rectangle and make sure it is in the center
+    geom_rect(aes(xmin = -1.5, xmax = 1.5, ymin = .5, ymax = 4), 
+            color = "black", fill = NA) +  # Add strike zone rectangle +
+  ## Size graph so rectangle is in middle on 
+  coord_fixed(xlim = c(-3, 3), ylim = c(0, 5)) +
+  scale_color_manual(values = pitch_colors) +  # Apply the custom color palette
+  facet_wrap(~BatterSide) +  # Facet by BatterSide
+  labs(title = "Pitch Locations from Catcher View",
+       x = "Horizontal Location",
+       y = "Vertical Location",
+       color = "Pitch Type") +
+  xlim(-horizontal_limits, horizontal_limits)+
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    axis.title = element_text(size = 10),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 12)
+  )
+```
+
+```{r}
+gLocations
+```
+
+Create Lefty Hitter Situation Chart
+```{r}
+df_list=list()
+for (i in 0:3){
+  for (j in 0:2){
+    x=pitcher %>% filter(BatterSide=="Left", Balls==i, Strikes==j) %>% 
+  group_by(TaggedPitchType) %>%
+  summarize(count = n()) %>% mutate(percentage = round((count / sum(count)) * 100, 2), Count=str_glue('{i}-{j}'))
+    df_list[[length(df_list) + 1]]=x
+  }
+}
+merged_df <- bind_rows(df_list)
+
+```
+
+```{r}
+
+test=dcast(merged_df,TaggedPitchType~Count, value.var = "percentage")
+desired_order <- c(1,2,3,4)  # This example reorders rows 2, 4, 1, 3
+
+# Reorder the data frame based on desired order
+test <- test[desired_order, ]
+```
+
+```{r}
+gt_table <- test %>%
+  gt() %>%
+  sub_missing(missing_text = 0) %>% 
+  tab_header(title = "LHH Pitch Percentages") %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "grey", weight = px(1)),
+    locations = cells_body(everything())) %>% 
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table_body.border.top.color = "black",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  )
+unique_pitches <- unique(results_table$TaggedPitchType)
+for (pitch in unique_pitches) {
+  if (pitch %in% names(pitch_colors)) {
+    gt_table <- gt_table %>%
+      tab_style(
+        style = list(
+          cell_fill(color = pitch_colors[pitch]),
+          cell_text(color = "white")  # Set text color to white
+        ),
+        locations = cells_body(columns = vars(TaggedPitchType), rows = TaggedPitchType == pitch)
+      )
+  }
+}
+
+# Display the table
+gt_table
+```
+
+
+Create Righty Hitter Situation Chart (Same Code, but BatterSide=="Right")
+```{r}
+df_list=list()
+for (i in 0:3){
+  for (j in 0:2){
+    x=pitcher %>% filter(BatterSide=="Right", Balls==i, Strikes==j) %>% 
+  group_by(TaggedPitchType) %>%
+  summarize(count = n()) %>% mutate(percentage = round((count / sum(count)) * 100, 2), Count=str_glue('{i}-{j}'))
+    df_list[[length(df_list) + 1]]=x
+  }
+}
+merged_df <- bind_rows(df_list)
+
+```
+
+```{r}
+
+test=dcast(merged_df,TaggedPitchType~Count, value.var = "percentage")
+desired_order <- c(1,2,3,4)  # This example reorders rows 2, 4, 1, 3
+
+# Reorder the data frame based on desired order
+test <- test[desired_order, ]
+```
+
+```{r}
+gt_table <- test %>%
+  gt() %>%
+  sub_missing(missing_text = 0) %>% 
+  tab_header(title = "RHH Pitch Percentages") %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "grey", weight = px(1)),
+    locations = cells_body(everything())) %>% 
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table_body.border.top.color = "black",
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2)
+  ) 
+  
+unique_pitches <- unique(results_table$TaggedPitchType)
+for (pitch in unique_pitches) {
+  if (pitch %in% names(pitch_colors)) {
+    gt_table <- gt_table %>%
+      tab_style(
+        style = list(
+          cell_fill(color = pitch_colors[pitch]),
+          cell_text(color = "white")  # Set text color to white
+        ),
+        locations = cells_body(columns = vars(TaggedPitchType), rows = TaggedPitchType == pitch)
+      )
+  }
+}
+
+# Display the table
+gt_table
+```
+
+
+Situations Table
+```{r}
+situation = pitcher %>% 
+  
+  group_by(TaggedPitchType) %>%
+  filter(!is.na(TaggedPitchType)) %>%
+  summarize(LHH = sum(BatterSide == "Left", na.rm = TRUE),
+            RHH = sum(BatterSide == "Right", na.rm = TRUE),
+            Ahead = sum(Strikes > Balls),
+            Behind = sum(Strikes < Balls & Strikes != 2)
+            ) %>% 
+  mutate(percentage_lhh = (LHH / sum(LHH)) * 100,
+         percentage_rhh = (RHH / sum(RHH)) * 100,
+         percentage_ah = (Ahead / sum(Ahead)) * 100,
+         percentage_beh = (Behind / sum(Behind)) * 100
+         ) %>%
+  select(TaggedPitchType, percentage_lhh, percentage_rhh, percentage_ah, percentage_beh) %>%
+    arrange(desc(percentage_ah))
+  
+
+## Make a gt table with same color palette as above
+situation_table = situation %>%
+  gt() %>%
+  tab_header(title = "Usage Rate by Situation") %>%
+  cols_label(
+    TaggedPitchType = "Pitch",
+    percentage_lhh = "LHH",
+    percentage_rhh = "RHH",
+    percentage_ah = "Ahead",
+    percentage_beh = "Behind"
+  ) %>%
+  fmt_number(
+    columns = vars(percentage_lhh, percentage_rhh, percentage_ah, percentage_beh),
+    decimals = 2
+  ) %>%
+  tab_options(
+    table.border.top.color = "black",
+    table.border.bottom.color = "black"
+  )
+
+for (pitch in unique_pitches) {
+  if (pitch %in% names(pitch_colors)) {
+    situation_table <- situation_table %>%
+      tab_style(
+        style = list(
+          cell_fill(color = pitch_colors[pitch]),
+          cell_text(color = "white")  # Set text color to white
+        ),
+        locations = cells_body(columns = vars(TaggedPitchType), rows = TaggedPitchType == pitch)
+      )
+  }
+}
+
+```
+
+```{r}
+situation_table
+```
+```{r}
+test2=pitcher %>% group_by(TaggedPitchType) %>% summarise("horz"=mean(HorzRelAngle), "vert"=mean(VertRelAngle))
+ggplot(test2, aes(x = horz, y = vert, color = TaggedPitchType)) +
+  geom_point(size=(12)) +
+  labs(title = "Average Release Angles by Pitch Type",
+       x = "Horizontal Release Angle",
+       y = "Vertical Release Angle") +
+  theme_minimal() +
+  theme(legend.title = element_text(size = 17, face = "bold"),  # Customize legend title appearance
+        legend.text = element_text(size = 15),
+        panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(hjust = 0.75, size=20)) +
+  coord_cartesian(xlim = c(-15, 5), ylim = c(-15, 5))
+```
+
+```{r}
+plot_filtered <- pitcher %>%
+  filter(!is.na(HorzBreak) & !is.na(InducedVertBreak))
+
+
+plot_filtered <- plot_filtered %>%
+  mutate(id = row_number())
+
+
+max_range <- max(abs(plot_filtered$HorzBreak), abs(plot_filtered$InducedVertBreak))
+
+
+plot(
+  plot_filtered$HorzBreak,
+  plot_filtered$InducedVertBreak,
+  xlab = "Horizontal Break (in.)",
+  ylab = "Induced Vertical Break (in.)",
+  main = "Pitch Movement",
+  col = as.factor(plot_filtered$TaggedPitchType),
+  pch = 19,
+  xlim = c(-max_range, max_range),
+  ylim = c(-max_range, max_range)
+)
+
+
+abline(h = 0, v = 0, col = "black")
+
+
+selected_points <- identify(
+  plot_filtered$HorzBreak,
+  plot_filtered$InducedVertBreak,
+  labels = plot_filtered$id,
+  plot = TRUE
+)
+
+
+selected_points
+```
+
